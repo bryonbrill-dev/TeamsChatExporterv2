@@ -133,18 +133,18 @@ function Get-GraphPagedResults {
         [Parameter(Mandatory = $true)] [securestring] $AccessToken
     )
 
-    $items = @()
+    $items = [System.Collections.Generic.List[object]]::new()
     $count = 0
     $nextLink = $Uri
 
     while ($null -ne $nextLink) {
         $page = Invoke-RestMethod -Method Get -Uri $nextLink -Authentication OAuth -Token $AccessToken
         if ($null -ne $page.value) {
-            $items += $page.value
+            $items.AddRange($page.value)
             $count += $page.value.Count
         }
         elseif ($null -ne $page) {
-            $items += $page
+            $items.Add($page)
             $count += 1
         }
 
@@ -203,16 +203,17 @@ function Get-MessageAttachmentsHtml {
         [Parameter(Mandatory = $true)] [string] $Template
     )
 
-    $attachmentHtml = @()
+    $attachmentHtml = [System.Text.StringBuilder]::new()
     foreach ($attachment in $Attachments) {
         $attachmentUrl = if ([string]::IsNullOrWhiteSpace($attachment.contentUrl)) { "#" } else { $attachment.contentUrl }
         $attachmentName = if ([string]::IsNullOrWhiteSpace($attachment.name)) { "Attachment" } else { $attachment.name }
-        $attachmentHtml += $Template `
+        $line = $Template `
             -Replace "###ATTACHEMENTURL###", $attachmentUrl `
             -Replace "###ATTACHEMENTNAME###", $attachmentName
+        $null = $attachmentHtml.AppendLine($line)
     }
 
-    return ($attachmentHtml -join "`n")
+    return $attachmentHtml.ToString().TrimEnd()
 }
 
 
@@ -278,7 +279,7 @@ foreach ($thread in $chats) {
 
     $conversation = $conversationsResponse.Items | Sort-Object createdDateTime
     $threadCount++
-    $messagesHTML = $null
+    $messagesBuilder = [System.Text.StringBuilder]::new()
     $hasMessagesInRange = $false
 
     if (($conversation.count -gt 0) -and (-not([string]::isNullorEmpty($name)))) {
@@ -374,7 +375,7 @@ foreach ($thread in $chats) {
             if ($attachments.Count -gt 0) {
                 $attachmentHTML = Get-MessageAttachmentsHtml -Attachments $attachments -Template $HTMLAttachmentBlock
 
-                $messagesHTML += $HTMLMessagesBlock `
+                $messageHtml = $HTMLMessagesBlock `
                     -Replace "###NAME###", $senderDisplayName`
                     -Replace "###CONVERSATION###", $messageBody`
                     -Replace "###DATE###", $time`
@@ -383,15 +384,17 @@ foreach ($thread in $chats) {
                     
             }
             else {
-                $messagesHTML += $HTMLMessagesBlock `
+                $messageHtml = $HTMLMessagesBlock `
                     -Replace "###NAME###", $senderDisplayName`
                     -Replace "###CONVERSATION###", $messageBody`
                     -Replace "###DATE###", $time`
                     -Replace "###ATTACHMENT###", $null`
                     -Replace "###IMAGE###", $pictureURL
             }
+            $null = $messagesBuilder.AppendLine($messageHtml)
         }
-        if ($hasMessagesInRange -and $null -ne $messagesHTML) {
+        $messagesHTML = $messagesBuilder.ToString().TrimEnd()
+        if ($hasMessagesInRange -and -not [string]::IsNullOrWhiteSpace($messagesHTML)) {
             $HTMLfile = $HTML `
                 -Replace "###MESSAGES###", $messagesHTML`
                 -Replace "###CHATNAME###", $name`
