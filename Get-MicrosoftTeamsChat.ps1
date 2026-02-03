@@ -102,6 +102,111 @@ $HTMLAttachmentBlock = @"
 </div>
 "@
 
+function Get-SafeFileName {
+    param(
+        [Parameter(Mandatory = $true)] [string] $Name,
+        [int] $MaxLength = 64
+    )
+
+    $safeName = $Name.Split([IO.Path]::GetInvalidFileNameChars()) -join '_'
+    if ([string]::IsNullOrWhiteSpace($safeName)) {
+        $safeName = "Chat"
+    }
+    if ($safeName.Length -gt $MaxLength) {
+        $safeName = $safeName.Substring(0, $MaxLength)
+    }
+
+    return $safeName
+}
+
+function Get-GraphPagedResults {
+    param(
+        [Parameter(Mandatory = $true)] [string] $Uri,
+        [Parameter(Mandatory = $true)] [securestring] $AccessToken
+    )
+
+    $items = @()
+    $count = 0
+    $nextLink = $Uri
+
+    while ($null -ne $nextLink) {
+        $page = Invoke-RestMethod -Method Get -Uri $nextLink -Authentication OAuth -Token $AccessToken
+        if ($null -ne $page.value) {
+            $items += $page.value
+            $count += $page.value.Count
+        }
+        elseif ($null -ne $page) {
+            $items += $page
+            $count += 1
+        }
+
+        $nextLink = $page.'@odata.nextLink'
+    }
+
+    return [pscustomobject]@{
+        Items = $items
+        Count = $count
+    }
+}
+
+function Get-UserDisplayName {
+    param(
+        [Parameter(Mandatory = $true)] $Message
+    )
+
+    if ($null -ne $Message.from -and $null -ne $Message.from.user -and -not [string]::IsNullOrWhiteSpace($Message.from.user.displayName)) {
+        return $Message.from.user.displayName
+    }
+
+    return "Unknown sender"
+}
+
+function Get-UserPhotoUpn {
+    param(
+        [Parameter(Mandatory = $true)] [string] $DisplayName,
+        [Parameter(Mandatory = $true)] [string] $Domain
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DisplayName) -or [string]::IsNullOrWhiteSpace($Domain)) {
+        return $null
+    }
+
+    return ($DisplayName -replace " ", ".") + "@" + $Domain
+}
+
+function Get-MessageAttachments {
+    param(
+        [Parameter(Mandatory = $true)] $Message
+    )
+
+    if ($null -ne $Message.attachments) {
+        return $Message.attachments
+    }
+    if ($null -ne $Message.attachment) {
+        return @($Message.attachment)
+    }
+
+    return @()
+}
+
+function Get-MessageAttachmentsHtml {
+    param(
+        [Parameter(Mandatory = $true)] $Attachments,
+        [Parameter(Mandatory = $true)] [string] $Template
+    )
+
+    $attachmentHtml = @()
+    foreach ($attachment in $Attachments) {
+        $attachmentUrl = if ([string]::IsNullOrWhiteSpace($attachment.contentUrl)) { "#" } else { $attachment.contentUrl }
+        $attachmentName = if ([string]::IsNullOrWhiteSpace($attachment.name)) { "Attachment" } else { $attachment.name }
+        $attachmentHtml += $Template `
+            -Replace "###ATTACHEMENTURL###", $attachmentUrl `
+            -Replace "###ATTACHEMENTNAME###", $attachmentName
+    }
+
+    return ($attachmentHtml -join "`n")
+}
+
 
 #Script
 Write-Host -ForegroundColor Cyan "`r`nStarting script..."
@@ -118,24 +223,9 @@ $accessToken = ConvertTo-SecureString $token -AsPlainText -Force
 
 $me = Invoke-RestMethod -Method Get -Uri "https://graph.microsoft.com/v1.0/me" -Authentication OAuth -Token $accessToken
 
-$allChats = @();
-$firstChat = Invoke-RestMethod -Method Get -Uri "https://graph.microsoft.com/v1.0/me/chats" -Authentication OAuth -Token $accessToken
-$allChats += $firstChat
-$allChatsCount = $firstChat.'@odata.count' 
-
 Write-Host ("`r`nGetting all chats, please wait... This may take some time.`r`n")
-
-if ($null -ne $firstChat.'@odata.nextLink') {
-    $chatNextLink = $firstChat.'@odata.nextLink'
-    do {
-        $chatsToAdd = Invoke-RestMethod -Method Get -Uri $chatNextLink -Authentication OAuth -Token $accessToken
-        $allChats += $chatsToAdd
-        $chatNextLink = $chatsToAdd.'@odata.nextLink'
-        $allChatsCount = $allChatsCount + $chatsToAdd.'@odata.count'
-    } until ($null -eq $chatsToAdd.'@odata.nextLink' )
-}
-
-$chats = $allChats.value | Sort-Object createdDateTime -Descending
+$chatsResponse = Get-GraphPagedResults -Uri "https://graph.microsoft.com/v1.0/me/chats" -AccessToken $accessToken
+$chats = $chatsResponse.Items | Sort-Object createdDateTime -Descending
 Write-Host ("`r`n" + $chats.count + " possible chat threads found.`r`n")
 
 $threadCount = 0
@@ -158,7 +248,7 @@ foreach ($thread in $chats) {
         Start-Sleep 5
     }
 
-    $name = Get-Random;
+    $name = Get-Random
 
     if ($null -ne $thread.topic) {
         $name = $thread.topic
@@ -166,67 +256,58 @@ foreach ($thread in $chats) {
     else {
         $membersUri = "https://graph.microsoft.com/v1.0/me/chats/" + $thread.id + "/members"
         $members = Invoke-RestMethod -Method Get -Uri $membersUri -Authentication OAuth -Token $accessToken
-        $members = $members.value.displayName | Where-Object { $_ -notlike "*@purple.telstra.com" }
+        $members = $members.value.displayName | Where-Object { $_ -notlike "*@$domain" }
         $name = ($members | Where-Object { $_ -notmatch $me.displayName } | Select-Object -Unique) -join ", "
     }
-    $allConversations = @();
-
     try {
-        $firstConversation = Invoke-RestMethod -Method Get -Uri $conversationUri -Authentication OAuth -Token $accessToken
-        $allConversations += $firstConversation
-        $allConversationsCount = $firstConversation.'@odata.count' 
+        $conversationsResponse = Get-GraphPagedResults -Uri $conversationUri -AccessToken $accessToken
     }
     catch {
         Write-Host ($name + " :: Could not download historical messages.")
         Write-Host -ForegroundColor Yellow "Skipping...`r`n"
+        continue
     }
 
-    if ($null -ne $firstConversation.'@odata.nextLink') {
-        $conversationNextLink = $firstConversation.'@odata.nextLink'
-        do {
-            $conversationToAdd = Invoke-RestMethod -Method Get -Uri $conversationNextLink -Authentication OAuth -Token $accessToken
-            $allConversations += $conversationToAdd
-            $conversationNextLink = $conversationToAdd.'@odata.nextLink'
-
-            $allConversationsCount = $allConversationsCount + $conversationToAdd.'@odata.count'
-        } until ($null -eq $conversationToAdd.'@odata.nextLink')
-    }
-
-    $conversation = $allConversations.value | Sort-Object createdDateTime 
+    $conversation = $conversationsResponse.Items | Sort-Object createdDateTime
     $threadCount++
     $messagesHTML = $null
 
     if (($conversation.count -gt 0) -and (-not([string]::isNullorEmpty($name)))) {
 
-        Write-Host -ForegroundColor White ($name + " :: " + $allConversationsCount + " messages.")
+        Write-Host -ForegroundColor White ($name + " :: " + $conversation.count + " messages.")
         Write-Verbose $conversationUri 
 
         foreach ($message in $conversation) {
-            $userPhotoUPN = ($message.from.user.displayName -replace " ", ".") + "@" + $domain
-            $profilefile = Join-Path -Path $ImagesFolder -ChildPath "$userPhotoUPN.jpg"
-            if (-not(Test-Path $profilefile)) {
-                $profilePhotoUri = "https://graph.microsoft.com/v1.0/users/" + $userPhotoUPN + "/photos/96x96/`$value"
-                $pictureURL = ("data:image/jpeg;base64,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")
-                try {
-                    Invoke-WebRequest -Uri $profilePhotoUri -Authentication OAuth -Token $accessToken -OutFile $profilefile
+            $senderDisplayName = Get-UserDisplayName -Message $message
+            $defaultPictureUrl = ("data:image/jpeg;base64,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")
+            $pictureURL = $defaultPictureUrl
+            $userPhotoUPN = Get-UserPhotoUpn -DisplayName $senderDisplayName -Domain $domain
+            if ($null -ne $userPhotoUPN) {
+                $profilefile = Join-Path -Path $ImagesFolder -ChildPath "$userPhotoUPN.jpg"
+                if (-not(Test-Path $profilefile)) {
+                    $profilePhotoUri = "https://graph.microsoft.com/v1.0/users/" + $userPhotoUPN + "/photos/96x96/`$value"
+                    try {
+                        Invoke-WebRequest -Uri $profilePhotoUri -Authentication OAuth -Token $accessToken -OutFile $profilefile
+                        $pictureURL = Get-EncodedImage $profilefile
+                    }
+                    catch {
+                    }
+                }
+                else {
                     $pictureURL = Get-EncodedImage $profilefile
                 }
-                catch {
-                }
-            }
-            else {
-                $pictureURL = Get-EncodedImage $profilefile
             }
 
-            $messageBody = $message.body.content
-            if ($messageBody -match "<img.+?src=[\`"']https:\/\/graph.microsoft.com(.+?)[\`"'].*?>") {
+            $messageBody = if ($null -ne $message.body) { $message.body.content } else { "" }
+            $imageMatches = [regex]::Matches($messageBody, "<img.+?src=[\`"']https:\/\/graph.microsoft.com(.+?)[\`"'].*?>")
+            if ($imageMatches.Count -gt 0) {
                 $imagecount = 0
 
-                foreach ($imgMatch in $Matches) {
+                foreach ($imgMatch in $imageMatches) {
                     $imagecount++
                     $threadidIO = $thread.id.Split([IO.Path]::GetInvalidFileNameChars()) -join '_'
                     $imagefile = Join-Path -Path $ImagesFolder -ChildPath "$threadidIO$imagecount.jpg"
-                    $imageUri = "https://graph.microsoft.com" + $imgMatch[1]
+                    $imageUri = "https://graph.microsoft.com" + $imgMatch.Groups[1].Value
 
                     Write-Host "Downloading embedded image in message..."
                     Write-Verbose $imageUri
@@ -240,7 +321,7 @@ foreach ($thread in $chats) {
                             Set-Content -Path $imagefile -AsByteStream -Value $response.Content
 
                             $imageencoded = Get-EncodedImage $imagefile
-                            $messageBody = $messageBody.Replace($imgMatch[0], ("<a href=`"" + $imageencoded + "`" download>" + $imgMatch[0] + "</a>"))
+                            $messageBody = $messageBody.Replace($imgMatch.Value, ("<a href=`"" + $imageencoded + "`" download>" + $imgMatch.Value + "</a>"))
                             $messageBody = $messageBody.Replace($imageUri, $imageencoded)
 
                             if ($response.StatusCode -ne 200) {
@@ -266,21 +347,19 @@ foreach ($thread in $chats) {
             $time = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date ($message.createdDateTime)), (Get-TimeZone).Id)
             $time = Get-Date $time -Format "dd MMMM yyyy, hh:mm tt"
 
-            if ($message.from.user.displayName -eq $me.displayName) {
+            if ($senderDisplayName -eq $me.displayName) {
                 $HTMLMessagesBlock = $HTMLMessagesBlock_me
             } 
             else { 
                 $HTMLMessagesBlock = $HTMLMessagesBlock_them
             }
 
-            if ($null -ne $message.attachment) {
-                $attachmentHTML = $HTMLAttachmentBlock `
-                    -Replace "###ATTACHEMENTURL###", $message.attachment.name`
-                    -Replace "###ATTACHEMENTNAME###", $message.attachment.contentURL`
-                    -Replace "###IMAGE###", $pictureURL
+            $attachments = Get-MessageAttachments -Message $message
+            if ($attachments.Count -gt 0) {
+                $attachmentHTML = Get-MessageAttachmentsHtml -Attachments $attachments -Template $HTMLAttachmentBlock
 
                 $messagesHTML += $HTMLMessagesBlock `
-                    -Replace "###NAME###", $message.from.user.displayName`
+                    -Replace "###NAME###", $senderDisplayName`
                     -Replace "###CONVERSATION###", $messageBody`
                     -Replace "###DATE###", $time`
                     -Replace "###ATTACHMENT###", $attachmentHTML`
@@ -289,7 +368,7 @@ foreach ($thread in $chats) {
             }
             else {
                 $messagesHTML += $HTMLMessagesBlock `
-                    -Replace "###NAME###", $message.from.user.displayName`
+                    -Replace "###NAME###", $senderDisplayName`
                     -Replace "###CONVERSATION###", $messageBody`
                     -Replace "###DATE###", $time`
                     -Replace "###ATTACHMENT###", $null`
@@ -300,11 +379,7 @@ foreach ($thread in $chats) {
             -Replace "###MESSAGES###", $messagesHTML`
             -Replace "###CHATNAME###", $name`
 
-        $name = $name.Split([IO.Path]::GetInvalidFileNameChars()) -join '_' 
-
-        if ($name.length -gt 64) {
-            $name = $name.Substring(0, 64);
-        }
+        $name = Get-SafeFileName -Name $name 
 
         $file = Join-Path -Path $ExportFolder -ChildPath "$name.html"
         if (Test-Path $file) { $file = ($file -Replace ".html", ( "(" + $threadCount + ")" + ".html")) }
