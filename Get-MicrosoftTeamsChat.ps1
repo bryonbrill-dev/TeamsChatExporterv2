@@ -45,6 +45,28 @@ Param(
     [Parameter(HelpMessage = "Filter messages up to this date/time (inclusive).")] [datetime] $To
 )
 
+if (-not $PSBoundParameters.ContainsKey('From')) {
+    $fromInput = Read-Host "Enter start date/time (optional, press Enter to skip)"
+    if (-not [string]::IsNullOrWhiteSpace($fromInput)) {
+        $parsedFrom = [datetime]::MinValue
+        if (-not [datetime]::TryParse($fromInput, [ref]$parsedFrom)) {
+            throw "Invalid -From date/time. Use a valid date/time value, for example: 2024-01-01 or 2024-01-01 08:00"
+        }
+        $From = $parsedFrom
+    }
+}
+
+if (-not $PSBoundParameters.ContainsKey('To')) {
+    $toInput = Read-Host "Enter end date/time (optional, press Enter to skip)"
+    if (-not [string]::IsNullOrWhiteSpace($toInput)) {
+        $parsedTo = [datetime]::MinValue
+        if (-not [datetime]::TryParse($toInput, [ref]$parsedTo)) {
+            throw "Invalid -To date/time. Use a valid date/time value, for example: 2024-01-31 or 2024-01-31 17:00"
+        }
+        $To = $parsedTo
+    }
+}
+
 #################################
 ##   Import Modules  ##
 #################################
