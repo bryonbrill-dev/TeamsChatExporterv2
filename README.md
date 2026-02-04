@@ -2,6 +2,10 @@
 
 This repository exports Microsoft Teams chat history to HTML using the Microsoft Graph API and a PowerShell script.
 
+## Credits
+
+This project is based on the original [MSTeamsChatExporter](https://github.com/telstrapurple/MSTeamsChatExporter) by Trent Steenholdt (trentsteenholdt-purple). Thanks for the foundation and inspiration.
+
 ## Requirements
 
 ### System requirements
