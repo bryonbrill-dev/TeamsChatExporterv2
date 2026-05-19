@@ -59,7 +59,7 @@ pwsh ./Get-MicrosoftTeamsChat.ps1 \
 
 ### Optional filters
 
-You can limit exported messages by date/time:
+You can limit exported messages by date/time and/or by target users (display name or UPN):
 
 ```powershell
 pwsh ./Get-MicrosoftTeamsChat.ps1 \
@@ -86,3 +86,17 @@ When you run the script:
 - **Tenant/domain mismatch**: The `-domain` parameter is used to build user UPNs for profile photos. Use your tenant's email domain (e.g., `contoso.com`).
 - **Firewalls/proxies**: Ensure outbound HTTPS to `login.microsoftonline.com` and `graph.microsoft.com` is allowed.
 - **PowerShell execution policy**: On first run you may see: `Get-MicrosoftTeamsChat.ps1 is not digitally signed. You cannot run this script on the current system.` This means the local execution policy blocks unsigned scripts. See [about_Execution_Policies](https://go.microsoft.com/fwlink/?LinkID=135170) for details. Common fixes include running the script with a bypass for the current session (`pwsh -ExecutionPolicy Bypass -File ./Get-MicrosoftTeamsChat.ps1 ...`), or changing the policy for your user (`Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`) if permitted by your organization.
+
+
+```powershell
+pwsh ./Get-MicrosoftTeamsChat.ps1 \
+  -ExportFolder "D:\ExportedHTML" \
+  -clientId "<Application (client) ID>" \
+  -tenantId "<Directory (tenant) ID>" \
+  -domain "contoso.com" \
+  -IncludeUsers "Alex Wilber","meganb@contoso.com"
+```
+
+- `-IncludeUsers` only exports chats where at least one member matches one of the provided values.
+- Matching is case-insensitive.
+- Use either display name (for example, `Alex Wilber`) or UPN/email (for example, `alexw@contoso.com`).
