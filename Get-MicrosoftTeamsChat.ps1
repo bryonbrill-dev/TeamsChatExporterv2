@@ -42,7 +42,8 @@ Param(
     [Parameter(Mandatory = $true, HelpMessage = "The tenant id of the Azure AD environment the user logs into")] [string] $tenantId,
     [Parameter(Mandatory = $true, HelpMessage = "The domain name of the UPNs for users in your tenant. E.g. contoso.com")] [string] $domain,
     [Parameter(HelpMessage = "Filter messages from this date/time (inclusive).")] [datetime] $From,
-    [Parameter(HelpMessage = "Filter messages up to this date/time (inclusive).")] [datetime] $To
+    [Parameter(HelpMessage = "Filter messages up to this date/time (inclusive).")] [datetime] $To,
+    [Parameter(HelpMessage = "Only export chats that include at least one of these users (display name or UPN).")][string[]] $IncludeUsers
 )
 
 if (-not $PSBoundParameters.ContainsKey('From')) {
@@ -204,6 +205,45 @@ function Get-UserPhotoUpn {
     return ($DisplayName -replace " ", ".") + "@" + $Domain
 }
 
+
+
+function Get-ChatMemberIdentifiers {
+    param(
+        [Parameter(Mandatory = $true)] $Member
+    )
+
+    $identifiers = [System.Collections.Generic.List[string]]::new()
+
+    if (-not [string]::IsNullOrWhiteSpace($Member.displayName)) {
+        $identifiers.Add($Member.displayName.ToLowerInvariant())
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Member.email)) {
+        $identifiers.Add($Member.email.ToLowerInvariant())
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Member.userId)) {
+        $identifiers.Add($Member.userId.ToLowerInvariant())
+    }
+
+    if ($null -ne $Member.additionalProperties) {
+        if ($Member.additionalProperties.ContainsKey('userPrincipalName')) {
+            $upn = $Member.additionalProperties['userPrincipalName']
+            if (-not [string]::IsNullOrWhiteSpace($upn)) {
+                $identifiers.Add($upn.ToLowerInvariant())
+            }
+        }
+        if ($Member.additionalProperties.ContainsKey('email')) {
+            $email = $Member.additionalProperties['email']
+            if (-not [string]::IsNullOrWhiteSpace($email)) {
+                $identifiers.Add($email.ToLowerInvariant())
+            }
+        }
+    }
+
+    return $identifiers | Select-Object -Unique
+}
+
 function Get-MessageAttachments {
     param(
         [Parameter(Mandatory = $true)] $Message
@@ -280,15 +320,38 @@ foreach ($thread in $chats) {
     }
 
     $name = Get-Random
+    $membersUri = "https://graph.microsoft.com/v1.0/me/chats/" + $thread.id + "/members"
+    $membersResponse = Invoke-RestMethod -Method Get -Uri $membersUri -Authentication OAuth -Token $accessToken
+    $members = $membersResponse.value
+
+    if ($IncludeUsers.Count -gt 0) {
+        $chatIdentifiers = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($member in $members) {
+            foreach ($id in (Get-ChatMemberIdentifiers -Member $member)) {
+                $null = $chatIdentifiers.Add($id)
+            }
+        }
+
+        $hasIncludedUser = $false
+        foreach ($filterUser in $IncludeUsers) {
+            if (-not [string]::IsNullOrWhiteSpace($filterUser) -and $chatIdentifiers.Contains($filterUser.ToLowerInvariant())) {
+                $hasIncludedUser = $true
+                break
+            }
+        }
+
+        if (-not $hasIncludedUser) {
+            Write-Host -ForegroundColor Yellow "Skipping chat (no IncludeUsers match)."
+            continue
+        }
+    }
 
     if ($null -ne $thread.topic) {
         $name = $thread.topic
     }
     else {
-        $membersUri = "https://graph.microsoft.com/v1.0/me/chats/" + $thread.id + "/members"
-        $members = Invoke-RestMethod -Method Get -Uri $membersUri -Authentication OAuth -Token $accessToken
-        $members = $members.value.displayName | Where-Object { $_ -notlike "*@$domain" }
-        $name = ($members | Where-Object { $_ -notmatch $me.displayName } | Select-Object -Unique) -join ", "
+        $memberNames = $members.displayName | Where-Object { $_ -notlike "*@$domain" }
+        $name = ($memberNames | Where-Object { $_ -notmatch $me.displayName } | Select-Object -Unique) -join ", "
     }
     try {
         $conversationsResponse = Get-GraphPagedResults -Uri $conversationUri -AccessToken $accessToken
